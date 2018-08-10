@@ -16,6 +16,8 @@
 #define USE_SAVE_ENERGY 0
 #define USE_SCALE 0
 
+#define PHONE_NUMBER "+48723491046"
+
 #define PERIPH_MOSFET_PIN 10 //pin tranzystora mosfet odcinającego zasilanie układu
 
 #define calibration_factor 14850.0 //Wartość współczynnika skalowania dla tensometru (dostosowanego w programie kalibracyjnym)
@@ -26,14 +28,11 @@
 #define DHT11_DEVICE1_PIN 2
 #define DHT11_DEVICE2_PIN 3
 
-#define SIM800_TX_PIN 8 //SIM800 TX <-> Arduino D8
-#define SIM800_RX_PIN 7 //SIM800 RX <-> Arduino D7
-SoftwareSerial serialSIM800(SIM800_TX_PIN,SIM800_RX_PIN);
 
 //----------------------------------------------
 //--------- VARIABLES & OBJECTS ----------------
 //----------------------------------------------
-BareBoneSim800 sim800; //moduł GSM
+BareBoneSim800 sim800("internet"); //moduł GSM
 DHT dht1;
 DHT dht2;
 HX711 scale(DOUT, CLK);
@@ -65,10 +64,12 @@ enum machineState {
     startProgram,
     wakeUpArduino,
     turnOnSupply,
+    getTimeSIM800,
+    getLocationSIM800,
     measureWeight,
     measureDHT11,
     measureBattery,
-    sim800send,
+    sendSmsSIM800,
     turnOffSupply,
     goSleep
   };
@@ -83,24 +84,17 @@ void setup() {
   Serial.begin(9600);//inicjalizacja dla debugowania w konsoli
   while(!Serial);//oczekiwanie na koniec inicjalizacji
 
+  //Inicjalizacja czujników temperatury i wilgotności
   dht1.setup(DHT11_DEVICE1_PIN);
   dht2.setup(DHT11_DEVICE2_PIN);
   delay(100);
-  //Inicjalizacja modułu GSM
-  serialSIM800.begin(9600);
-  delay(100); 
-  DEBUG?Serial.println("Inicjalizacja HX711..."):true;
+  sim800.begin();
+  delay(100);
+  //Inicjalizacja HX711
   scale.set_scale(calibration_factor);                //This value is obtained by using the SparkFun_HX711_Calibration sketch
   scale.set_offset(zero_factor);                      //Zero out the scale using a previously known zero_factor
-  
-  DEBUG?Serial.println("Zakończono inicjalizację HX711"):true;
-  if(INIT_TEST){
-      wagaPomiar();  
-      sendSms();
-    }; 
   thisMachine = turnOnSupply;
-  delay(2000);
-  DEBUG?Serial.println("KROK : Startujemy..."):true;
+  // DEBUG?Serial.println("KROK : Startujemy..."):true;
 }
 //----------------------------------------------
 //--------------- L O O P ----------------------
@@ -108,59 +102,60 @@ void setup() {
 
 void loop() {
   millisActual = millis();
-
-    //Sekwencja pracy programu
-    if (thisMachine == turnOnSupply )
-    {
-      DEBUG?Serial.println("KROK :Zasilanie peryferiów uruchamianie modułów..."):true;
+delay(5000);
+sendSms();
+/*
+  switch (thisMachine){
+    case turnOnSupply:
+      // DEBUG?Serial.println("KROK :Zasilanie peryferiów uruchamianie modułów..."):true;
       digitalWrite(PERIPH_MOSFET_PIN, HIGH);
       delay(5000);
-      DEBUG?Serial.println("KROK :Zasilanie peryferiów włączone"):true;
+      // DEBUG?Serial.println("KROK :Zasilanie peryferiów włączone"):true;
       thisMachine = measureWeight;
-    }
-    
-    if (thisMachine == measureWeight )
-    {
+    break;
+    case startProgram:
+    break;
+    case wakeUpArduino:
+    break;
+    case getTimeSIM800:
+    break;
+    case getLocationSIM800:
+    break;
+    case measureWeight:
       DEBUG?Serial.println("KROK :Pomiar wagi"):true;
       wagaPomiar();
       thisMachine = measureDHT11;
-    }
-    
-    if (thisMachine == measureDHT11 )
-    {
+    break;
+    case measureDHT11:
       DEBUG?Serial.println("KROK : DHT11"):true;
       readHumTemp(); 
       thisMachine = measureBattery;
-    }
-
-    if (thisMachine == measureBattery )
-    {
+    break;
+    case measureBattery:
       DEBUG?Serial.println("KROK : STAN AKUMULATORA"):true;
       readBatteryStatus(); 
-      thisMachine = sim800send;
-    }
-    
-    if (thisMachine == sim800send )
-    {
+      thisMachine = sendSmsSIM800;
+    break;
+    case sendSmsSIM800:
       DEBUG?Serial.println("KROK : SIM800L"):true;
       sendSms(); 
       thisMachine = turnOffSupply;
-    }
-
-    if (thisMachine == turnOffSupply )
-    {
+    break;
+    case turnOffSupply:
       digitalWrite(PERIPH_MOSFET_PIN, LOW);
       DEBUG?Serial.println("KROK :Zasilanie peryferiów wyłączone"):true;      
       thisMachine = goSleep;
-    }
-  
-    if (thisMachine == goSleep )
-    {
+    break;
+    case goSleep:
       DEBUG?Serial.println("KROK : Usypianie..."):true;  
       goSleep8s(3);   
- 
       thisMachine = turnOnSupply;
+    break;
+    default:
+    DEBUG?Serial.println("ERROR"):true;
     }
+
+    */
 }
 
 //----------------------------------------------
@@ -171,56 +166,64 @@ void wagaPomiar(){
       weight = scale.get_units();
       if(weight<0){ weight = 0;}
       dtostrf(weight, 6, 1, weightString); 
-      DEBUG?Serial.print(weight):true;
-      DEBUG?Serial.println("kg"):true;
+      // DEBUG?Serial.print(weight):true;
+      // DEBUG?Serial.println("kg"):true;
   }
   
 void sendSms(){
   if (USE_GSM)
   {
-          //Ustawienie formatu SMS na ASCII
-        serialSIM800.write("AT+CMGF=1\r\n");
-        delay(200);
-        serialSIM800.write("AT+CMGS=\"723491046\"\r\n");
-        delay(200);
-        serialSIM800.println(">> UL GSM <<");
-        serialSIM800.print("waga:");
-        serialSIM800.print(weightString);
-        serialSIM800.print(" kg");      
-        serialSIM800.println();
-        
-        serialSIM800.print("wilgotnosc wew:");
-        serialSIM800.print(wilgotnosc1String);
-        serialSIM800.print(" %");
-        serialSIM800.println();
+    bool deviceAttached = sim800.isAttached();
+    if (deviceAttached)
+      Serial.println("A");
+    else
+      Serial.println("NA");
+    
+       const char* number = PHONE_NUMBER;
+       char smsContent[255];
+       String message = "";
+       //waga
+       message += "waga: ";
+       message += weightString; 
+       message += " kg \r\n" ;
 
-        serialSIM800.print("temperatura wew:");
-        serialSIM800.print(temperatura1String);
-        serialSIM800.print(" C");
-        serialSIM800.println();
+       //wilgotnosc wew
+       message += "wilg wew: ";
+       message += wilgotnosc1String; 
+       message += " % \r\n" ;
 
-        serialSIM800.print("wilgotnosc zew:");
-        serialSIM800.print(wilgotnosc2String);
-        serialSIM800.print(" %");
-        serialSIM800.println();
+       //temperatura wew
+       message += "temp wew: ";
+       message += temperatura1String; 
+       message += " C \r\n" ;
 
-        serialSIM800.print("temperatura zew:");
-        serialSIM800.print(temperatura2String);
-        serialSIM800.print(" C");
-        serialSIM800.println();
+       //wilgotnosc zew
+       message += "wilg zew: ";
+       message += wilgotnosc2String; 
+       message += " % \r\n" ;
 
-        serialSIM800.print("Akumulator:");
-        serialSIM800.print(voltageString);
-        serialSIM800.print(" V");
-        serialSIM800.println();
+       //temperatura zew
+       message += "temp zew: ";
+       message += temperatura2String; 
+       message += " C \r\n" ;
 
-        if (voltage < 5.8){
-          serialSIM800.println("KONIECZNE LADOWANIE !");
-        }
+        //temperatura zew
+       message += "aku: ";
+       message += voltageString; 
+       message += " V \r\n" ;
+       
+       message.toCharArray(smsContent,255);
+       
+       Serial.println(smsContent);
 
-        delay(200);
-        //Znak końca wiadomości sms
-        serialSIM800.write((char)26);
+      /*
+       bool messageSent = sim800.sendSMS(number,smsContent);
+       if(messageSent)
+         Serial.println("Sent");
+       else
+         Serial.println("Not Sent");
+         */
+
   } else
   {
     DEBUG?Serial.println("GSM wyłączony USE_GSM = 0 "):true;
@@ -271,8 +274,8 @@ void sendSms(){
   // Convert the analog reading (which goes from 0 - 1023) to a voltage (0 - 5V):
   voltage = (sensorValue * (5.0 / 1023.0))*2 ;
   dtostrf(voltage, 7, 2, voltageString);
-  DEBUG?Serial.print(voltage):true;
-  DEBUG?Serial.println("V"):true;
+  // DEBUG?Serial.print(voltage):true;
+  // DEBUG?Serial.println("V"):true;
   }
 
   void goSleep8s(int iterations)
