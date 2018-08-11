@@ -2,31 +2,33 @@
 //-------------- LIBS & DEFINITIONS ------------
 //----------------------------------------------
 
-#include "HX711.h" //przetwornik tensometru
-#include <SoftwareSerial.h> //komunikacja szeregowa
-#include <DHT.h> //czujniki temperatury i wilgotności
-#include "LowPower.h" //oszczędzanie energii
-#include <BareBoneSim800.h> // 
+#include "HX711.h" 
+#include <DHT.h> 
+#include "LowPower.h" 
+#include <BareBoneSim800.h>  
 
 #define DEBUG 1
-#define INIT_TEST 0
-#define USE_GSM 1
-#define USE_HTTP 1
+#define USE_SMS 1
+#define USE_HTTP 0
+#define USE_BATTERYSTATE 0
 #define USE_DHT 0
-#define USE_SAVE_ENERGY 0
 #define USE_SCALE 0
+#define USE_SCHEDULE 1 //without schedule sms sending won't work
+#define USE_GPS 0
 
 #define PHONE_NUMBER "+48723491046"
 
-#define PERIPH_MOSFET_PIN 10 //pin tranzystora mosfet odcinającego zasilanie układu
+#define PERIPH_MOSFET_PIN 10 //MOSFET pin 
 
-#define calibration_factor 14850.0 //Wartość współczynnika skalowania dla tensometru (dostosowanego w programie kalibracyjnym)
-#define zero_factor 8457924 //Wartość współczynnika zera (potrzebne jeśli na wadze cały czas znajduje się obciążenie)
-#define DOUT  5 //układ HX711
-#define CLK  4  //układ HX711
+#define INTERVAL 900 //device work interval in seconds
 
-#define DHT11_DEVICE1_PIN 2
-#define DHT11_DEVICE2_PIN 3
+#define calibration_factor 14850.0 
+#define zero_factor 8457924 
+#define DOUT  5 //HX711
+#define CLK  4  //HX711
+
+#define DHT_DEVICE1_PIN 2
+#define DHT_DEVICE2_PIN 3
 
 
 //----------------------------------------------
@@ -37,37 +39,42 @@ DHT dht1;
 DHT dht2;
 HX711 scale(DOUT, CLK);
 
+//SIM800 connection status
+bool sim800connOK; 
+
 float weight;
-char weightString[10] = "";
+char weightString[10] = "0";
 
-//stan akumulatora
+//battery state
 float voltage = 0.0;
-char voltageString[10] = "";
+char voltageString[10] = "0";
 
-//czujniki na zewnątrz
-int wilgotnosc1 = 0;
-char wilgotnosc1String[10] = "";
-int temperatura1 = 0;
-char temperatura1String[10] = "";
+//external sensors
+int humidity1 = 0;
+char humidity1String[10] = "0";
+int temperature1 = 0;
+char temperature1String[10] = "0";
 
-//czujniki w środku ula
-int wilgotnosc2 = 0;
-char wilgotnosc2String[10] = "";
-int temperatura2 = 0;
-char temperatura2String[10] = "";
+//internal sensors
+int humidity2 = 0;
+char humidity2String[10] = "0";
+int temperature2 = 0;
+char temperature2String[10] = "0";
 
-//zmienne dla pobrania czasu i lokalizacji
+//localization & time
  String time1 = "";
  String location = "";
  String gpsLng = "";
  String gpsLat = "";
 
-bool deviceAttached;
- 
-//zmienna do nieblokującej obsługi
-unsigned long millisActual = 0;
+//sms sending schedule
+int programmedHours[4] = {6, 13, 16, 20};
+int hourActual = 0;
+int hourOld = 0;
+bool requestSendSms = false;
 
-//maszyna stanów do sekwencji
+int intervalIterations=0;
+//sequence machine state
 enum machineState {
     startProgram,
     wakeUpArduino,
@@ -76,7 +83,7 @@ enum machineState {
     getTimeSIM800,
     getLocationSIM800,
     measureWeight,
-    measureDHT11,
+    measureDHT,
     measureBattery,
     sendSmsSIM800,
     turnOffSupply,
@@ -90,34 +97,37 @@ enum machineState thisMachine = startProgram;
 //----------------------------------------------
   
 void setup() {
-  pinMode(PERIPH_MOSFET_PIN, OUTPUT);
-  Serial.begin(9600);//inicjalizacja dla debugowania w konsoli
-  while(!Serial);//oczekiwanie na koniec inicjalizacji
+  pinMode(PERIPH_MOSFET_PIN, OUTPUT); // MOSFET pin as output
+  
+  Serial.begin(9600); //console debugger init
+  while(!Serial); 
 
-  //Inicjalizacja czujników temperatury i wilgotności
-  dht1.setup(DHT11_DEVICE1_PIN);
-  dht2.setup(DHT11_DEVICE2_PIN);
-  delay(100);
+  //humidity & temp sensors initialization
+  dht1.setup(DHT_DEVICE1_PIN);
+  dht2.setup(DHT_DEVICE2_PIN);
+
+  //SIM800L initialization
   sim800.begin();
-  delay(100);
-  //Inicjalizacja HX711
-  scale.set_scale(calibration_factor);                //This value is obtained by using the SparkFun_HX711_Calibration sketch
-  scale.set_offset(zero_factor);                      //Zero out the scale using a previously known zero_factor
+
+  //HX711 initialization with fixed values
+  scale.set_scale(calibration_factor); //This value is obtained by using the SparkFun_HX711_Calibration sketch
+  scale.set_offset(zero_factor); //Zero out the scale using a previously known zero_factor
+
+  //initial state for sequence
   thisMachine = turnOnSupply;
-  // DEBUG?Serial.println("KROK : Startujemy..."):true;
 }
 //----------------------------------------------
 //--------------- L O O P ----------------------
 //----------------------------------------------
 
 void loop() {
-  millisActual = millis();
+  
   switch (thisMachine){
+     
     case turnOnSupply:
-      // DEBUG?Serial.println("KROK :Zasilanie peryferiów uruchamianie modułów..."):true;
-      digitalWrite(PERIPH_MOSFET_PIN, HIGH);
-      delay(5000);
-      // DEBUG?Serial.println("KROK :Zasilanie peryferiów włączone"):true;
+      DEBUG?Serial.println("SQ mosfet"):true;
+      digitalWrite(PERIPH_MOSFET_PIN, HIGH); // turn on MOSFET
+      delay(20000); //waiting for module initialisation
       thisMachine = measureWeight;
     break;
     
@@ -128,68 +138,89 @@ void loop() {
     break;
     
     case measureWeight:
-      DEBUG?Serial.println("KROK :Pomiar wagi"):true;
-      wagaPomiar();
-      thisMachine = measureDHT11;
+      if (USE_SCALE){
+        DEBUG?Serial.println("SQ weight"):true;
+        wagaPomiar();
+      }
+      thisMachine = measureDHT;
     break;
     
-    case measureDHT11:
-      DEBUG?Serial.println("KROK : DHT11"):true;
-      readHumTemp(); 
+    case measureDHT:
+      if (USE_DHT){
+        DEBUG?Serial.println("SQ dht"):true;
+        readHumTemp(); 
+      }
       thisMachine = measureBattery;
     break;
     
     case measureBattery:
-      DEBUG?Serial.println("KROK : STAN AKUMULATORA"):true;
-      readBatteryStatus(); 
+      if (USE_BATTERYSTATE){
+        DEBUG?Serial.println("SQ battery"):true;
+        readBatteryStatus(); 
+      }
       thisMachine = connectSIM800;
     break;
     
     case connectSIM800:
-      deviceAttached = sim800.isAttached();
-      if (deviceAttached)
-        DEBUG?Serial.println("SIM800 OK"):true;
-      else
-        DEBUG?Serial.println("SIM800 ERROR"):true;
-      thisMachine = getTimeSIM800;
+      DEBUG?Serial.println("SQ conn sim800"):true;
+      sim800connOK = sim800.isAttached();
+      if (sim800connOK){
+          DEBUG?Serial.println("SIM800 OK"):true;
+          thisMachine = getTimeSIM800;
+        }
+      else{
+          DEBUG?Serial.println("SIM800 ERROR"):true;
+          thisMachine = turnOffSupply;
+        }
+
     break;
         
-    case getTimeSIM800:
-      getTimeAndCheckSchedule();
+    case getTimeSIM800:      
+      if(USE_SCHEDULE)
+      {
+        DEBUG?Serial.println("SQ time"):true;
+        getTimeAndCheckSchedule();
+      }     
       thisMachine = getLocationSIM800;
     break;
     
     case getLocationSIM800:
-      getLocationGps();
+      if(USE_GPS)
+      {
+        DEBUG?Serial.println("SQ location"):true;
+        getLocationGps();
+      }
       thisMachine = sendSmsSIM800;
     break;
     
-    case sendSmsSIM800:
-      DEBUG?Serial.println("KROK : SIM800L"):true;
-      sendSms(); 
+    case sendSmsSIM800: 
+      if (USE_SMS && requestSendSms){
+        DEBUG?Serial.println("SQ sms"):true;
+        sendSms(); 
+      }
       thisMachine = turnOffSupply;
     break;
     
     case turnOffSupply:
-      digitalWrite(PERIPH_MOSFET_PIN, LOW);
-      DEBUG?Serial.println("KROK :Zasilanie peryferiów wyłączone"):true;      
+      DEBUG?Serial.println("SQ supply off"):true;  
+      digitalWrite(PERIPH_MOSFET_PIN, LOW);          
       thisMachine = goSleep;
     break;
     
     case goSleep:
-      DEBUG?Serial.println("KROK : Usypianie..."):true;  
-      goSleep8s(3);   
+      DEBUG?Serial.println("SQ sleep"):true;  
+      intervalIterations = INTERVAL / 8;
+      goSleep8s(intervalIterations);   
       thisMachine = turnOnSupply;
     break;
-    default:
-    DEBUG?Serial.println("ERROR"):true;
-    }
-
     
+    default:
+    DEBUG?Serial.println("SQ ERROR"):true;
+    } 
 }
 
 //----------------------------------------------
-//----------- F U N K C J E --------------------
+//----------- F U N C T I O N S ----------------
 //----------------------------------------------
 
 void wagaPomiar(){
@@ -201,87 +232,84 @@ void wagaPomiar(){
   }
   
 void sendSms(){
-  if (USE_GSM)
-  {  
-       const char* number = PHONE_NUMBER;
+       const char* number = "+48723491046";
        char smsContent[255];
        String message = "";
        //waga
        message += "waga: ";
        message += weightString; 
-       message += " kg \r\n" ;
+       message += " kg\r\n" ;
 
        //wilgotnosc wew
        message += "wilg wew: ";
-       message += wilgotnosc1String; 
-       message += " % \r\n" ;
+      // message += humidity1String; 
+       message += " %\r\n" ;
 
        //temperatura wew
        message += "temp wew: ";
-       message += temperatura1String; 
-       message += " C \r\n" ;
+       //message += temperature1String; 
+       message += " C\r\n" ;
 
        //wilgotnosc zew
        message += "wilg zew: ";
-       message += wilgotnosc2String; 
-       message += " % \r\n" ;
+       //message += humidity2String; 
+       message += " %\r\n" ;
 
        //temperatura zew
        message += "temp zew: ";
-       message += temperatura2String; 
-       message += " C \r\n" ;
+       //message += temperature2String; 
+       message += " C\r\n" ;
 
         //temperatura zew
        message += "aku: ";
-       message += voltageString; 
-       message += " V \r\n" ;
-       
+      // message += voltageString; 
+       message += " V\r\n" ;
+      
        message.toCharArray(smsContent,255);
-       // DEBUG?Serial.println(smsContent):true;
+       delay(100);
+       //DEBUG?Serial.println(smsContent):true;
       
        bool messageSent = sim800.sendSMS(number,smsContent);
        if(messageSent)
-         Serial.println("Sent");
+       {
+         //Serial.println("Sent");
+         requestSendSms = false; //acknowledge sms sent
+       }
        else
          Serial.println("Not Sent");       
-  } else
-  {
-    DEBUG?Serial.println("GSM wyłączony USE_GSM = 0 "):true;
-  };
-
   }
 
   void readHumTemp(){
     //Pobranie informacji o wilgotnosci
     delay(100);
-    wilgotnosc1 = dht1.getHumidity();
-    dtostrf(wilgotnosc1, 6, 0, wilgotnosc1String); 
+    humidity1 = dht1.getHumidity();
+    dtostrf(humidity1, 6, 0, humidity1String); 
     //Pobranie informacji o temperaturze
-    temperatura1 = dht1.getTemperature();
-    dtostrf(temperatura1, 6, 1, temperatura1String); 
+    temperature1 = dht1.getTemperature();
+    dtostrf(temperature1, 6, 1, temperature1String); 
   
   if ((dht1.getStatusString() == "OK") && (DEBUG))  {
     Serial.print("Czujnik 1: ");
-    Serial.print(wilgotnosc1);
+    Serial.print(humidity1);
     Serial.print("%RH | ");
-    Serial.print(temperatura1);
+    Serial.print(temperature1);
     Serial.println("*C");
   }
   //Odczekanie wymaganego czasugo
   delay(dht1.getMinimumSamplingPeriod());
   
   //Pobranie informacji o wilgotnosci
-  wilgotnosc2 = dht2.getHumidity();
-  dtostrf(wilgotnosc2, 6, 0, wilgotnosc2String); 
+  humidity2 = dht2.getHumidity();
+  dtostrf(humidity2, 6, 0, humidity2String); 
   //Pobranie informacji o temperaturze
-  temperatura2 = dht2.getTemperature();
-  dtostrf(temperatura2, 6, 1, temperatura2String); 
+  temperature2 = dht2.getTemperature();
+  dtostrf(temperature2, 6, 1, temperature2String); 
   
   if ((dht2.getStatusString() == "OK")&& (DEBUG)) {
     Serial.print("Czujnik 2: ");
-    Serial.print(wilgotnosc2);
+    Serial.print(humidity2);
     Serial.print("%RH | ");
-    Serial.print(temperatura2);
+    Serial.print(temperature2);
     Serial.println("*C");
   }
   //Odczekanie wymaganego czasugo
@@ -301,8 +329,8 @@ void sendSms(){
   void goSleep8s(int iterations)
   {
     for (int i = 0; i < iterations; i++) {
-    DEBUG?Serial.print("odpoczywam: "):true; 
-    DEBUG?Serial.println(i*8):true; 
+    //DEBUG?Serial.print("resting sec: "):true; 
+    //DEBUG?Serial.println(i*8):true; 
     //LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
     delay(50);
     LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);  
@@ -311,25 +339,39 @@ void sendSms(){
   }
   
  void getTimeAndCheckSchedule(){
-    Serial.print("Aktualna godzina: ");
+    
+
     time1 = sim800.getTime();
     time1 = time1.substring(13,15);
-    int hour = time1.toInt() + 2;
+
+     //set up request for sending sms only once per hour according to programmed hours
+    int hour = time1.toInt() + 2;   
+    hourActual = hour;
+    if (hourOld != hourActual){
+      for (int i=0; i<4;i++){      
+        if (programmedHours[i] == hourActual){    
+          //DEBUG?Serial.println("sms request"):true;    
+          requestSendSms = true;
+        }
+      }     
+    } else {
+        //DEBUG?Serial.println("already checked "):true; 
+    }
+    hourOld = hourActual;
     time1 = String(hour);
-    Serial.println(time1);
+    //DEBUG?Serial.println("Actual hour: "):true; 
+    //DEBUG?Serial.println(time1):true;    
   }
 
   void getLocationGps(){
-     Serial.print("Lokalizacja: ");
+     //Serial.print("Lokalizacja: ");
      location = sim800.getLocation();
      location = location.substring(2,21);
-    Serial.println(location);
+     //Serial.println(location);
  
     gpsLng = location.substring(0,9);
-    //a = gpsLng.toFloat();
-    Serial.println(gpsLng);
+    //Serial.println(gpsLng);
     gpsLat = location.substring(10,21); 
-    //b = gpsLat.toFloat();
-    Serial.println(gpsLat);
+    //Serial.println(gpsLat);
   }
     
