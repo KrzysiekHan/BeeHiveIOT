@@ -12,7 +12,7 @@
 #define USE_HTTP 0
 #define USE_BATTERYSTATE 0
 #define USE_DHT 0
-#define USE_SCALE 0
+#define USE_SCALE 1
 #define USE_SCHEDULE 1 //without schedule sms sending won't work
 #define USE_GPS 0
 
@@ -20,9 +20,9 @@
 
 #define PERIPH_MOSFET_PIN 10 //MOSFET pin 
 
-#define INTERVAL 900 //device work interval in seconds
+#define INTERVAL 600 //device work interval in seconds
 
-#define calibration_factor 14850.0 
+#define calibration_factor 13650.0 
 #define zero_factor 8457924 
 #define DOUT  5 //HX711
 #define CLK  4  //HX711
@@ -68,7 +68,7 @@ char temperature2String[10] = "0";
  String gpsLat = "";
 
 //sms sending schedule
-int programmedHours[4] = {6, 13, 16, 20};
+int programmedHours[17] = {6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22};
 int hourActual = 0;
 int hourOld = 0;
 bool requestSendSms = false;
@@ -127,7 +127,9 @@ void loop() {
     case turnOnSupply:
       DEBUG?Serial.println("SQ mosfet"):true;
       digitalWrite(PERIPH_MOSFET_PIN, HIGH); // turn on MOSFET
-      delay(20000); //waiting for module initialisation
+      
+      if (USE_SMS || USE_HTTP || USE_SCHEDULE || USE_GPS) delay(20000); //waiting for module initialisation 
+      
       thisMachine = measureWeight;
     break;
     
@@ -140,7 +142,7 @@ void loop() {
     case measureWeight:
       if (USE_SCALE){
         DEBUG?Serial.println("SQ weight"):true;
-        wagaPomiar();
+        getWeight();
       }
       thisMachine = measureDHT;
     break;
@@ -162,6 +164,8 @@ void loop() {
     break;
     
     case connectSIM800:
+    if (USE_SMS || USE_HTTP || USE_SCHEDULE || USE_GPS)
+    {
       DEBUG?Serial.println("SQ conn sim800"):true;
       sim800connOK = sim800.isAttached();
       if (sim800connOK){
@@ -172,7 +176,9 @@ void loop() {
           DEBUG?Serial.println("SIM800 ERROR"):true;
           thisMachine = turnOffSupply;
         }
-
+    } else {
+      thisMachine = turnOffSupply;
+    }
     break;
         
     case getTimeSIM800:      
@@ -210,6 +216,7 @@ void loop() {
     case goSleep:
       DEBUG?Serial.println("SQ sleep"):true;  
       intervalIterations = INTERVAL / 8;
+      delay(1000);
       goSleep8s(intervalIterations);   
       thisMachine = turnOnSupply;
     break;
@@ -223,12 +230,12 @@ void loop() {
 //----------- F U N C T I O N S ----------------
 //----------------------------------------------
 
-void wagaPomiar(){
+void getWeight(){
       weight = scale.get_units();
       if(weight<0){ weight = 0;}
       dtostrf(weight, 6, 1, weightString); 
-      // DEBUG?Serial.print(weight):true;
-      // DEBUG?Serial.println("kg"):true;
+       DEBUG?Serial.print(weight):true;
+       DEBUG?Serial.println("kg"):true;
   }
   
 void sendSms(){
@@ -329,8 +336,8 @@ void sendSms(){
   void goSleep8s(int iterations)
   {
     for (int i = 0; i < iterations; i++) {
-    //DEBUG?Serial.print("resting sec: "):true; 
-    //DEBUG?Serial.println(i*8):true; 
+    DEBUG?Serial.print("resting sec: "):true; 
+    DEBUG?Serial.println(i*8):true; 
     //LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
     delay(50);
     LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);  
@@ -339,8 +346,6 @@ void sendSms(){
   }
   
  void getTimeAndCheckSchedule(){
-    
-
     time1 = sim800.getTime();
     time1 = time1.substring(13,15);
 
@@ -348,7 +353,7 @@ void sendSms(){
     int hour = time1.toInt() + 2;   
     hourActual = hour;
     if (hourOld != hourActual){
-      for (int i=0; i<4;i++){      
+      for (int i=0; i<17;i++){      
         if (programmedHours[i] == hourActual){    
           //DEBUG?Serial.println("sms request"):true;    
           requestSendSms = true;
