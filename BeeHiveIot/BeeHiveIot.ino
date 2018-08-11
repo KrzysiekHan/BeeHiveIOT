@@ -56,6 +56,14 @@ char wilgotnosc2String[10] = "";
 int temperatura2 = 0;
 char temperatura2String[10] = "";
 
+//zmienne dla pobrania czasu i lokalizacji
+ String time1 = "";
+ String location = "";
+ String gpsLng = "";
+ String gpsLat = "";
+
+bool deviceAttached;
+ 
 //zmienna do nieblokującej obsługi
 unsigned long millisActual = 0;
 
@@ -64,6 +72,7 @@ enum machineState {
     startProgram,
     wakeUpArduino,
     turnOnSupply,
+    connectSIM800,
     getTimeSIM800,
     getLocationSIM800,
     measureWeight,
@@ -75,6 +84,7 @@ enum machineState {
   };
 
 enum machineState thisMachine = startProgram;
+
 //----------------------------------------------
 //--------------- S E T U P --------------------
 //----------------------------------------------
@@ -102,9 +112,6 @@ void setup() {
 
 void loop() {
   millisActual = millis();
-delay(5000);
-sendSms();
-/*
   switch (thisMachine){
     case turnOnSupply:
       // DEBUG?Serial.println("KROK :Zasilanie peryferiów uruchamianie modułów..."):true;
@@ -113,39 +120,62 @@ sendSms();
       // DEBUG?Serial.println("KROK :Zasilanie peryferiów włączone"):true;
       thisMachine = measureWeight;
     break;
+    
     case startProgram:
     break;
+    
     case wakeUpArduino:
     break;
-    case getTimeSIM800:
-    break;
-    case getLocationSIM800:
-    break;
+    
     case measureWeight:
       DEBUG?Serial.println("KROK :Pomiar wagi"):true;
       wagaPomiar();
       thisMachine = measureDHT11;
     break;
+    
     case measureDHT11:
       DEBUG?Serial.println("KROK : DHT11"):true;
       readHumTemp(); 
       thisMachine = measureBattery;
     break;
+    
     case measureBattery:
       DEBUG?Serial.println("KROK : STAN AKUMULATORA"):true;
       readBatteryStatus(); 
+      thisMachine = connectSIM800;
+    break;
+    
+    case connectSIM800:
+      deviceAttached = sim800.isAttached();
+      if (deviceAttached)
+        DEBUG?Serial.println("SIM800 OK"):true;
+      else
+        DEBUG?Serial.println("SIM800 ERROR"):true;
+      thisMachine = getTimeSIM800;
+    break;
+        
+    case getTimeSIM800:
+      getTimeAndCheckSchedule();
+      thisMachine = getLocationSIM800;
+    break;
+    
+    case getLocationSIM800:
+      getLocationGps();
       thisMachine = sendSmsSIM800;
     break;
+    
     case sendSmsSIM800:
       DEBUG?Serial.println("KROK : SIM800L"):true;
       sendSms(); 
       thisMachine = turnOffSupply;
     break;
+    
     case turnOffSupply:
       digitalWrite(PERIPH_MOSFET_PIN, LOW);
       DEBUG?Serial.println("KROK :Zasilanie peryferiów wyłączone"):true;      
       thisMachine = goSleep;
     break;
+    
     case goSleep:
       DEBUG?Serial.println("KROK : Usypianie..."):true;  
       goSleep8s(3);   
@@ -155,7 +185,7 @@ sendSms();
     DEBUG?Serial.println("ERROR"):true;
     }
 
-    */
+    
 }
 
 //----------------------------------------------
@@ -172,13 +202,7 @@ void wagaPomiar(){
   
 void sendSms(){
   if (USE_GSM)
-  {
-    bool deviceAttached = sim800.isAttached();
-    if (deviceAttached)
-      Serial.println("A");
-    else
-      Serial.println("NA");
-    
+  {  
        const char* number = PHONE_NUMBER;
        char smsContent[255];
        String message = "";
@@ -213,17 +237,13 @@ void sendSms(){
        message += " V \r\n" ;
        
        message.toCharArray(smsContent,255);
-       
-       Serial.println(smsContent);
-
-      /*
+       // DEBUG?Serial.println(smsContent):true;
+      
        bool messageSent = sim800.sendSMS(number,smsContent);
        if(messageSent)
          Serial.println("Sent");
        else
-         Serial.println("Not Sent");
-         */
-
+         Serial.println("Not Sent");       
   } else
   {
     DEBUG?Serial.println("GSM wyłączony USE_GSM = 0 "):true;
@@ -232,13 +252,13 @@ void sendSms(){
   }
 
   void readHumTemp(){
-      //Pobranie informacji o wilgotnosci
-  delay(100);
-  wilgotnosc1 = dht1.getHumidity();
-  dtostrf(wilgotnosc1, 6, 0, wilgotnosc1String); 
-  //Pobranie informacji o temperaturze
-  temperatura1 = dht1.getTemperature();
-  dtostrf(temperatura1, 6, 1, temperatura1String); 
+    //Pobranie informacji o wilgotnosci
+    delay(100);
+    wilgotnosc1 = dht1.getHumidity();
+    dtostrf(wilgotnosc1, 6, 0, wilgotnosc1String); 
+    //Pobranie informacji o temperaturze
+    temperatura1 = dht1.getTemperature();
+    dtostrf(temperatura1, 6, 1, temperatura1String); 
   
   if ((dht1.getStatusString() == "OK") && (DEBUG))  {
     Serial.print("Czujnik 1: ");
@@ -266,26 +286,50 @@ void sendSms(){
   }
   //Odczekanie wymaganego czasugo
   delay(dht2.getMinimumSamplingPeriod());
-    }
+ }
 
  void readBatteryStatus()
  {
-  int sensorValue = analogRead(A0);
-  // Convert the analog reading (which goes from 0 - 1023) to a voltage (0 - 5V):
-  voltage = (sensorValue * (5.0 / 1023.0))*2 ;
-  dtostrf(voltage, 7, 2, voltageString);
-  // DEBUG?Serial.print(voltage):true;
-  // DEBUG?Serial.println("V"):true;
-  }
+    int sensorValue = analogRead(A0);
+    // Convert the analog reading (which goes from 0 - 1023) to a voltage (0 - 5V):
+    voltage = (sensorValue * (5.0 / 1023.0))*2 ;
+    dtostrf(voltage, 7, 2, voltageString);
+    // DEBUG?Serial.print(voltage):true;
+    // DEBUG?Serial.println("V"):true;
+ }
 
   void goSleep8s(int iterations)
   {
-      for (int i = 0; i < iterations; i++) {
+    for (int i = 0; i < iterations; i++) {
     DEBUG?Serial.print("odpoczywam: "):true; 
     DEBUG?Serial.println(i*8):true; 
     //LowPower.idle(SLEEP_8S, ADC_OFF, TIMER2_OFF, TIMER1_OFF, TIMER0_OFF, SPI_OFF, USART0_OFF, TWI_OFF);
     delay(50);
     LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);  
     delay(50);                
-  }
     }
+  }
+  
+ void getTimeAndCheckSchedule(){
+    Serial.print("Aktualna godzina: ");
+    time1 = sim800.getTime();
+    time1 = time1.substring(13,15);
+    int hour = time1.toInt() + 2;
+    time1 = String(hour);
+    Serial.println(time1);
+  }
+
+  void getLocationGps(){
+     Serial.print("Lokalizacja: ");
+     location = sim800.getLocation();
+     location = location.substring(2,21);
+    Serial.println(location);
+ 
+    gpsLng = location.substring(0,9);
+    //a = gpsLng.toFloat();
+    Serial.println(gpsLng);
+    gpsLat = location.substring(10,21); 
+    //b = gpsLat.toFloat();
+    Serial.println(gpsLat);
+  }
+    
