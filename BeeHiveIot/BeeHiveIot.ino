@@ -5,7 +5,7 @@
 #include "HX711.h" 
 #include <DHT.h> 
 #include "LowPower.h" 
-#include <BareBoneSim800.h>  
+#include <BareBoneSim800.h>  //https://github.com/thehapyone/BareBoneSim800
 
 #define DEBUG 1
 #define USE_SMS 1
