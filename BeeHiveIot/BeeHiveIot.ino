@@ -10,8 +10,8 @@
 #define DEBUG 1
 #define USE_SMS 1
 #define USE_HTTP 0
-#define USE_BATTERYSTATE 0
-#define USE_DHT 0
+#define USE_BATTERYSTATE 1
+#define USE_DHT 1
 #define USE_SCALE 1
 #define USE_SCHEDULE 1 //without schedule sms sending won't work
 #define USE_GPS 0
@@ -20,7 +20,7 @@
 
 #define PERIPH_MOSFET_PIN 10 //MOSFET pin 
 
-#define INTERVAL 600 //device work interval in seconds
+#define INTERVAL 30 //device work interval in seconds
 
 #define calibration_factor 13650.0 
 #define zero_factor 8457924 
@@ -216,8 +216,8 @@ void loop() {
     case goSleep:
       DEBUG?Serial.println("SQ sleep"):true;  
       intervalIterations = INTERVAL / 8;
-      delay(1000);
-      goSleep8s(intervalIterations);   
+      goSleep8s(intervalIterations);
+      software_Reset(); //bez resetu modem po kilku połączeniach się zawiesza   
       thisMachine = turnOnSupply;
     break;
     
@@ -249,27 +249,27 @@ void sendSms(){
 
        //wilgotnosc wew
        message += "wilg wew: ";
-      // message += humidity1String; 
+      message += humidity1String; 
        message += " %\r\n" ;
 
        //temperatura wew
        message += "temp wew: ";
-       //message += temperature1String; 
+       message += temperature1String; 
        message += " C\r\n" ;
 
        //wilgotnosc zew
        message += "wilg zew: ";
-       //message += humidity2String; 
+       message += humidity2String; 
        message += " %\r\n" ;
 
        //temperatura zew
        message += "temp zew: ";
-       //message += temperature2String; 
+       message += temperature2String; 
        message += " C\r\n" ;
 
         //temperatura zew
        message += "aku: ";
-      // message += voltageString; 
+       message += voltageString; 
        message += " V\r\n" ;
       
        message.toCharArray(smsContent,255);
@@ -379,4 +379,8 @@ void sendSms(){
     gpsLat = location.substring(10,21); 
     //Serial.println(gpsLat);
   }
-    
+
+  void software_Reset() // Restarts program from beginning but does not reset the peripherals and registers
+  {
+    asm volatile ("  jmp 0");  
+  }  
