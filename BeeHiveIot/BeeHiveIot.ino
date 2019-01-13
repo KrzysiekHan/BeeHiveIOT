@@ -5,7 +5,10 @@
 #include "HX711.h" 
 #include <DHT.h> 
 #include "LowPower.h" 
-#include <BareBoneSim800.h>  //https://github.com/thehapyone/BareBoneSim800
+//#include <BareBoneSim800.h>  //https://github.com/thehapyone/BareBoneSim800
+#include <GSMSim.h>
+#include <Wire.h>
+#include "DS3231.h"
 
 #define DEBUG 1
 #define USE_SMS 1
@@ -13,7 +16,7 @@
 #define USE_BATTERYSTATE 1
 #define USE_DHT 1
 #define USE_SCALE 1
-#define USE_SCHEDULE 1 //without schedule sms sending won't work
+#define USE_SCHEDULE 1 
 #define USE_GPS 0
 
 #define PHONE_NUMBER "+48723491046"
@@ -31,13 +34,21 @@
 #define DHT_DEVICE2_PIN 3
 
 
+#define RX 8
+#define TX 9
+#define RESET 2
+#define BAUD 9600
 //----------------------------------------------
 //--------- VARIABLES & OBJECTS ----------------
 //----------------------------------------------
-BareBoneSim800 sim800("internet"); //moduł GSM
+//BareBoneSim800 sim800("internet"); //moduł GSM
+GSMSim gsm(RX, TX, RESET);
 DHT dht1;
 DHT dht2;
+DS3231 Clock;
+RTClib RTC;
 HX711 scale(DOUT, CLK);
+
 
 //SIM800 connection status
 bool sim800connOK; 
@@ -62,13 +73,12 @@ int temperature2 = 0;
 char temperature2String[10] = "0";
 
 //localization & time
- String time1 = "";
  String location = "";
  String gpsLng = "";
  String gpsLat = "";
 
 //sms sending schedule
-int programmedHours[17] = {6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22};
+int programmedHours[24] = {6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22};
 int hourActual = 0;
 int hourOld = 0;
 bool requestSendSms = false;
@@ -80,7 +90,7 @@ enum machineState {
     wakeUpArduino,
     turnOnSupply,
     connectSIM800,
-    getTimeSIM800,
+    getTimeRtc,
     getLocationSIM800,
     measureWeight,
     measureDHT,
@@ -92,22 +102,29 @@ enum machineState {
 
 enum machineState thisMachine = startProgram;
 
+DateTime now;
+
+  //int countOK = 0;
+  //int countNOK = 0;
 //----------------------------------------------
 //--------------- S E T U P --------------------
 //----------------------------------------------
   
 void setup() {
   pinMode(PERIPH_MOSFET_PIN, OUTPUT); // MOSFET pin as output
+  digitalWrite(PERIPH_MOSFET_PIN, HIGH); // turn on MOSFET
   
+  Wire.begin(); //I2C library
   Serial.begin(9600); //console debugger init
-  while(!Serial); 
-
+  while(!Serial); //wait for serial ready
+  
   //humidity & temp sensors initialization
   dht1.setup(DHT_DEVICE1_PIN);
   dht2.setup(DHT_DEVICE2_PIN);
 
   //SIM800L initialization
-  sim800.begin();
+  //sim800.begin();
+  gsm.start(BAUD);
 
   //HX711 initialization with fixed values
   scale.set_scale(calibration_factor); //This value is obtained by using the SparkFun_HX711_Calibration sketch
@@ -121,15 +138,14 @@ void setup() {
 //----------------------------------------------
 
 void loop() {
-  
+
   switch (thisMachine){
      
     case turnOnSupply:
       DEBUG?Serial.println("SQ mosfet"):true;
       digitalWrite(PERIPH_MOSFET_PIN, HIGH); // turn on MOSFET
       
-      if (USE_SMS || USE_HTTP || USE_SCHEDULE || USE_GPS) delay(20000); //waiting for module initialisation 
-      
+      if (USE_SMS || USE_HTTP || USE_SCHEDULE || USE_GPS) delay(20000); //waiting for module initialisation       
       thisMachine = measureWeight;
     break;
     
@@ -167,10 +183,10 @@ void loop() {
     if (USE_SMS || USE_HTTP || USE_SCHEDULE || USE_GPS)
     {
       DEBUG?Serial.println("SQ conn sim800"):true;
-      sim800connOK = sim800.isAttached();
+      sim800connOK = 1;
       if (sim800connOK){
           DEBUG?Serial.println("SIM800 OK"):true;
-          thisMachine = getTimeSIM800;
+          thisMachine = getTimeRtc;
         }
       else{
           DEBUG?Serial.println("SIM800 ERROR"):true;
@@ -181,12 +197,16 @@ void loop() {
     }
     break;
         
-    case getTimeSIM800:      
+    case getTimeRtc:      
       if(USE_SCHEDULE)
       {
         DEBUG?Serial.println("SQ time"):true;
         getTimeAndCheckSchedule();
-      }     
+      }   
+      if (USE_SCHEDULE == 0) //request sms if schedule disabled
+      {
+        requestSendSms = true;
+      }  
       thisMachine = getLocationSIM800;
     break;
     
@@ -194,7 +214,8 @@ void loop() {
       if(USE_GPS)
       {
         DEBUG?Serial.println("SQ location"):true;
-        getLocationGps();
+        //Nie zmienione dla nowej biblioteki
+        //getLocationGps();
       }
       thisMachine = sendSmsSIM800;
     break;
@@ -217,13 +238,14 @@ void loop() {
       DEBUG?Serial.println("SQ sleep"):true;  
       intervalIterations = INTERVAL / 8;
       goSleep8s(intervalIterations);
-      software_Reset(); //bez resetu modem po kilku połączeniach się zawiesza   
+      //software_Reset(); //bez resetu modem po kilku połączeniach się zawiesza   
       thisMachine = turnOnSupply;
     break;
     
     default:
     DEBUG?Serial.println("SQ ERROR"):true;
     } 
+    
 }
 
 //----------------------------------------------
@@ -275,15 +297,22 @@ void sendSms(){
        message.toCharArray(smsContent,255);
        delay(100);
        //DEBUG?Serial.println(smsContent):true;
+         //Serial.println("Changing to text mode.");
+          gsm.smsTextMode(true); // TEXT or PDU mode. TEXT is readable :)
+          //Serial.println("Sending Message --->");
+          bool messageSent = gsm.smsSend(number, smsContent); // if success it returns true (1) else false (0)
+          delay(2000);  
       
-       bool messageSent = sim800.sendSMS(number,smsContent);
+       //bool messageSent = sim800.sendSMS(number,smsContent);
        if(messageSent)
        {
          //Serial.println("Sent");
          requestSendSms = false; //acknowledge sms sent
        }
-       else
-         Serial.println("Not Sent");       
+       else{
+         Serial.println("Not Sent");
+        }
+        
   }
 
   void readHumTemp(){
@@ -329,8 +358,8 @@ void sendSms(){
     // Convert the analog reading (which goes from 0 - 1023) to a voltage (0 - 5V):
     voltage = (sensorValue * (5.0 / 1023.0))*2 ;
     dtostrf(voltage, 7, 2, voltageString);
-    // DEBUG?Serial.print(voltage):true;
-    // DEBUG?Serial.println("V"):true;
+    DEBUG?Serial.print(voltage):true;
+    DEBUG?Serial.println("V"):true;
  }
 
   void goSleep8s(int iterations)
@@ -346,31 +375,30 @@ void sendSms(){
   }
   
  void getTimeAndCheckSchedule(){
-    time1 = sim800.getTime();
-    time1 = time1.substring(13,15);
-
-     //set up request for sending sms only once per hour according to programmed hours
-    int hour = time1.toInt() + 2;   
+    delay(1000);
+    now = RTC.now();
+    Serial.println(now.hour());
+    
+    //set up request for sending sms only once per hour according to programmed hours
+    int hour = now.hour();   
     hourActual = hour;
     if (hourOld != hourActual){
-      for (int i=0; i<17;i++){      
+      DEBUG?Serial.println("actual != old"):true;
+      for (int i=0; i<24;i++){      
         if (programmedHours[i] == hourActual){    
-          //DEBUG?Serial.println("sms request"):true;    
+          DEBUG?Serial.println("sms request"):true;    
           requestSendSms = true;
         }
       }     
     } else {
-        //DEBUG?Serial.println("already checked "):true; 
+        DEBUG?Serial.println("already checked "):true; 
     }
-    hourOld = hourActual;
-    time1 = String(hour);
-    //DEBUG?Serial.println("Actual hour: "):true; 
-    //DEBUG?Serial.println(time1):true;    
+    hourOld = hourActual; //remember hour for next cycle  
   }
 
   void getLocationGps(){
      //Serial.print("Lokalizacja: ");
-     location = sim800.getLocation();
+     //location = sim800.getLocation();
      location = location.substring(2,21);
      //Serial.println(location);
  
@@ -380,6 +408,19 @@ void sendSms(){
     //Serial.println(gpsLat);
   }
 
+  void setRTC(int Year, int Month, int Day, int DoW, 
+    int Hour,int Minute, int Second){
+        Clock.setClockMode(false);  // set to 24h
+    //setClockMode(true); // set to 12h
+
+    Clock.setYear(Year);
+    Clock.setMonth(Month);
+    Clock.setDate(Day);
+    //Clock.setDoW(1);
+    Clock.setHour(Hour);
+    Clock.setMinute(Minute);
+    Clock.setSecond(Second);
+    }
   void software_Reset() // Restarts program from beginning but does not reset the peripherals and registers
   {
     asm volatile ("  jmp 0");  
